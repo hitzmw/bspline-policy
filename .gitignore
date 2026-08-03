@@ -3,4 +3,5 @@
 setup.sh
 cloudml/
 simple_mobile/yam_teleop/data
+drifting_policy/
 .omc/

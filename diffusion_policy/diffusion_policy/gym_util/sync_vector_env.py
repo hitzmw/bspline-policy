@@ -60,14 +60,20 @@ class SyncVectorEnv(VectorEnv):
         for env, seed in zip(self.envs, seeds):
             env.seed(seed)
 
-    def reset_wait(self):
+    def reset_async(self, seed=None, options=None):
+        del options
+        if seed is not None:
+            self.seed(seed)
+
+    def reset_wait(self, seed=None, options=None):
+        del seed, options
         self._dones[:] = False
         observations = []
         for env in self.envs:
             observation = env.reset()
             observations.append(observation)
         self.observations = concatenate(
-            observations, self.observations, self.single_observation_space
+            self.single_observation_space, observations, self.observations
         )
 
         return deepcopy(self.observations) if self.copy else self.observations
@@ -84,7 +90,7 @@ class SyncVectorEnv(VectorEnv):
             observations.append(observation)
             infos.append(info)
         self.observations = concatenate(
-            observations, self.observations, self.single_observation_space
+            self.single_observation_space, observations, self.observations
         )
 
         return (

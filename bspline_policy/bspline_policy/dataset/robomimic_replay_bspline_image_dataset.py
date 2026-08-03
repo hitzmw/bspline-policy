@@ -31,7 +31,6 @@ from diffusion_policy.dataset.preprocessed_sample_cache import (
 )
 from diffusion_policy.dataset.robomimic_replay_image_dataset import (
     _convert_robomimic_to_replay,
-    _replay_cache_path,
 )
 from diffusion_policy.model.common.normalizer import LinearNormalizer
 from diffusion_policy.model.common.rotation_transformer import RotationTransformer
@@ -77,6 +76,8 @@ class RobomimicReplayBSplineImageDataset(BaseImageDataset):
         cache_preprocessed_device="cpu",
         cache_preprocessed_share_memory=False,
         cache_preprocessed_rgb_dtype="float32",
+        observation_history=False,
+        cache_base_path=None,
     ):
         rotation_transformer = RotationTransformer(
             from_rep="axis_angle", to_rep=rotation_rep
@@ -87,7 +88,14 @@ class RobomimicReplayBSplineImageDataset(BaseImageDataset):
 
         replay_buffer = None
         if use_cache:
-            cache_zarr_path = _replay_cache_path(dataset_path, cache_suffix)
+            replay_cache_base = _cache_base_path(
+                cache_base_path or dataset_path,
+                cache_suffix,
+            )
+            cache_zarr_path = replay_cache_base + ".zarr.zip"
+            cache_directory = os.path.dirname(cache_zarr_path)
+            if cache_directory:
+                os.makedirs(cache_directory, exist_ok=True)
             cache_lock_path = cache_zarr_path + ".lock"
             print("Acquiring lock on cache.")
             with FileLock(cache_lock_path):
@@ -163,7 +171,10 @@ class RobomimicReplayBSplineImageDataset(BaseImageDataset):
         sampler_cache_path = None
         if use_cache:
             sampler_cache_path = make_bspline_sampler_cache_path(
-                base_path=_cache_base_path(dataset_path, cache_suffix),
+                base_path=_cache_base_path(
+                    cache_base_path or dataset_path,
+                    cache_suffix,
+                ),
                 episode_mask=train_mask,
                 key_first_k=key_first_k,
                 chunk_size=chunk_size,
@@ -202,6 +213,7 @@ class RobomimicReplayBSplineImageDataset(BaseImageDataset):
         self.pad_before = pad_before
         self.pad_after = pad_after
         self.dataset_path = dataset_path
+        self.cache_base_path = cache_base_path
         self.cache_suffix = cache_suffix
         self.use_cache = use_cache
         self.chunk_size = chunk_size
@@ -216,6 +228,7 @@ class RobomimicReplayBSplineImageDataset(BaseImageDataset):
         self.cache_preprocessed_device = cache_preprocessed_device
         self.cache_preprocessed_share_memory = cache_preprocessed_share_memory
         self.cache_preprocessed_rgb_dtype = cache_preprocessed_rgb_dtype
+        self.observation_history = bool(observation_history)
         self._preprocessed_cache = None
         self._length = len(sampler)
 
@@ -245,7 +258,10 @@ class RobomimicReplayBSplineImageDataset(BaseImageDataset):
         sampler_cache_path = None
         if self.use_cache:
             sampler_cache_path = make_bspline_sampler_cache_path(
-                base_path=_cache_base_path(self.dataset_path, self.cache_suffix),
+                base_path=_cache_base_path(
+                    self.cache_base_path or self.dataset_path,
+                    self.cache_suffix,
+                ),
                 episode_mask=~self.train_mask,
                 key_first_k=key_first_k,
                 chunk_size=self.chunk_size,
@@ -337,6 +353,42 @@ class RobomimicReplayBSplineImageDataset(BaseImageDataset):
     def __len__(self):
         return self._length
 
+    def _get_observation_history(self, idx: int, key: str) -> np.ndarray:
+        """Return oldest-to-newest observations ending at the action timestep.
+
+        ``BSplineChunkSampler`` historically returns the first observations at
+        and after the action timestep. That is useful for the original replay
+        tools, but an online Robomimic runner supplies past/current
+        observations. The opt-in history path aligns training with that
+        rollout contract and repeats the first episode observation for initial
+        padding, matching ``SequenceSampler``.
+        """
+        timestep = int(self.sampler.valid_timesteps[idx])
+        episode_index = int(
+            np.searchsorted(
+                self.sampler.episode_ends,
+                timestep,
+                side="right",
+            )
+        )
+        episode_start = (
+            0
+            if episode_index == 0
+            else int(self.sampler.episode_ends[episode_index - 1])
+        )
+        history_start = max(
+            episode_start,
+            timestep - int(self.n_obs_steps) + 1,
+        )
+        history = self.replay_buffer[key][history_start : timestep + 1]
+        missing = int(self.n_obs_steps) - len(history)
+        if missing > 0:
+            history = np.concatenate(
+                [np.repeat(history[:1], missing, axis=0), history],
+                axis=0,
+            )
+        return history
+
     def _sample_uncached_item(
         self,
         idx: int,
@@ -347,9 +399,12 @@ class RobomimicReplayBSplineImageDataset(BaseImageDataset):
                 "RobomimicReplayBSplineImageDataset was serialized without "
                 "replay/sampler because cache_preprocessed_samples is enabled, "
                 "but no preprocessed cache is available for this item."
-            )
+        )
         threadpool_limits(1)
         data = self.sampler.sample_sequence(idx)
+        if self.observation_history:
+            for key in self.rgb_keys + self.lowdim_keys:
+                data[key] = self._get_observation_history(idx, key)
         t_slice = slice(self.n_obs_steps)
 
         obs_dict = {}

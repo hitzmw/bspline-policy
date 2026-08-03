@@ -17,7 +17,12 @@ from typing import Optional
 import numpy as np
 import torch
 from filelock import FileLock
-from scipy.interpolate import BSpline, generate_knots, make_lsq_spline
+from scipy.interpolate import BSpline, make_lsq_spline
+
+try:
+    from scipy.interpolate import generate_knots
+except ImportError:
+    generate_knots = None
 
 from bspline_policy.common.knots import decode_relative_knots, encode_relative_knots
 from diffusion_policy.common.replay_buffer import ReplayBuffer
@@ -38,6 +43,12 @@ class ScipyBSplineCompression:
         verbose: bool = False,
         s: float = 1e-12,
     ) -> np.ndarray:
+        if generate_knots is None:
+            raise RuntimeError(
+                "B-spline preprocessing requires scipy>=1.15. Generate the "
+                "Robomimic B-spline caches in the bsp-simple environment "
+                "before training or evaluation in an older environment."
+            )
         t = np.arange(len(data))
         last_knots = None
         last_error = None
