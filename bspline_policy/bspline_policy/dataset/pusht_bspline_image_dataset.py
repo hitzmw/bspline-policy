@@ -41,6 +41,7 @@ class PushTBSplineImageDataset(BaseImageDataset):
         max_train_episodes: int | None = None,
         relative_knots: bool = False,
         cache_base_path: str | None = None,
+        raw_action_steps: int = 8,
     ):
         super().__init__()
         zarr_path = os.path.expanduser(zarr_path)
@@ -69,6 +70,7 @@ class PushTBSplineImageDataset(BaseImageDataset):
         self.max_error = float(max_error)
         self.stride = int(stride)
         self.relative_knots = bool(relative_knots)
+        self.raw_action_steps = int(raw_action_steps)
         self.cache_base_path = (
             os.path.expanduser(cache_base_path) if cache_base_path else None
         )
@@ -159,6 +161,11 @@ class PushTBSplineImageDataset(BaseImageDataset):
         }
         normalizer["action"] = get_range_normalizer_from_stat(stat)
 
+        raw_action_stats = array_to_stats(self.replay_buffer["action"])
+        normalizer["raw_action"] = get_range_normalizer_from_stat(
+            raw_action_stats
+        )
+
         agent_pos_stats = array_to_stats(self.replay_buffer["state"][:, :2])
         normalizer["agent_pos"] = get_range_normalizer_from_stat(agent_pos_stats)
         normalizer["image"] = get_image_range_normalizer()
@@ -172,6 +179,11 @@ class PushTBSplineImageDataset(BaseImageDataset):
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         sample = self.sampler.sample_sequence(idx)
+        reconstruction = self.sampler.sample_reconstruction_sequence(
+            idx,
+            num_actions=self.raw_action_steps,
+            action_params=sample["action"],
+        )
         image = np.moveaxis(sample["img"], -1, 1).astype(np.float32)
         image *= 1.0 / 255.0
         data = {
@@ -180,5 +192,11 @@ class PushTBSplineImageDataset(BaseImageDataset):
                 "agent_pos": sample["state"][:, :2].astype(np.float32),
             },
             "action": sample["action"].astype(np.float32),
+            "raw_action": reconstruction["raw_action"].astype(np.float32),
+            "raw_action_time": reconstruction["raw_action_time"],
+            "raw_action_mask": reconstruction["raw_action_mask"],
+            "raw_action_episode_mask": reconstruction[
+                "raw_action_episode_mask"
+            ],
         }
         return dict_apply(data, torch.from_numpy)

@@ -401,6 +401,75 @@ class BSplineChunkSampler:
         result[self.action_key] = self.all_actions[chunk_idx].copy()
         return result
 
+    def sample_raw_action_sequence(
+        self,
+        idx: int,
+        num_actions: int,
+    ) -> dict:
+        """Return physical actions from the current timestep with safe padding.
+
+        This deliberately does not use ``key_first_k``.  Episode-tail padding
+        is zero-filled and accompanied by an explicit mask, so floating-point
+        samples never enter the generic sampler's NaN assertion path.
+        Timestamps are local physical indices ``j = 0, ..., num_actions-1``.
+        """
+        if idx >= len(self.valid_timesteps):
+            raise IndexError(f"Index {idx} out of range [0, {len(self)})")
+        if num_actions <= 0:
+            raise ValueError("num_actions must be positive")
+
+        timestep = int(self.valid_timesteps[idx])
+        episode_index = int(
+            np.searchsorted(self.episode_ends, timestep, side="right")
+        )
+        episode_end = int(self.episode_ends[episode_index])
+        available = min(int(num_actions), episode_end - timestep)
+
+        source = self.replay_buffer[self.action_key]
+        raw_action = np.zeros(
+            (int(num_actions),) + tuple(source.shape[1:]),
+            dtype=source.dtype,
+        )
+        if available > 0:
+            raw_action[:available] = source[timestep : timestep + available]
+        episode_mask = np.zeros(int(num_actions), dtype=bool)
+        episode_mask[:available] = True
+        action_time = np.arange(int(num_actions), dtype=np.float32)
+        return {
+            "raw_action": raw_action,
+            "raw_action_time": action_time,
+            "raw_action_episode_mask": episode_mask,
+        }
+
+    def sample_reconstruction_sequence(
+        self,
+        idx: int,
+        num_actions: int,
+        action_params: Optional[np.ndarray] = None,
+    ) -> dict:
+        """Return raw targets and the episode-and-target-support loss mask."""
+        result = self.sample_raw_action_sequence(idx, num_actions)
+        if action_params is None:
+            timestep = int(self.valid_timesteps[idx])
+            chunk_idx = int(self.timestep_to_chunk[timestep])
+            action_params = self.all_actions[chunk_idx]
+        absolute_params = np.asarray(action_params)
+        if self.relative_knots:
+            absolute_params = decode_relative_knots(
+                absolute_params, degree=self.degree
+            )
+        knots = absolute_params[:, 0]
+        support_left = float(knots[self.degree])
+        support_right = float(knots[-(self.degree + 1)])
+        support_valid = (
+            (result["raw_action_time"] >= support_left)
+            & (result["raw_action_time"] <= support_right)
+        )
+        result["raw_action_mask"] = (
+            result["raw_action_episode_mask"] & support_valid
+        )
+        return result
+
     def get_action_stats(self) -> dict:
         if len(self.all_actions) == 0:
             shape = (1, self.n_action_steps, self.n_action_channels)

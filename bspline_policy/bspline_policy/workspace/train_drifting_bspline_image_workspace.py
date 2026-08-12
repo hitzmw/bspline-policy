@@ -98,6 +98,12 @@ class TrainDriftingBSplineImageWorkspace(BaseWorkspace):
             ),
             last_epoch=self.global_step - 1,
         )
+        steps_per_epoch = len(train_dataloader)
+        if cfg.training.max_train_steps is not None:
+            steps_per_epoch = min(
+                steps_per_epoch, int(cfg.training.max_train_steps)
+            )
+        total_optimizer_steps = steps_per_epoch * int(cfg.training.num_epochs)
         ema: EMAModel | None = None
         if self.ema_model is not None:
             ema = hydra.utils.instantiate(cfg.ema, model=self.ema_model)
@@ -156,6 +162,18 @@ class TrainDriftingBSplineImageWorkspace(BaseWorkspace):
                     if train_sampling_batch is None:
                         train_sampling_batch = batch
 
+                    if hasattr(self.model, "set_training_step"):
+                        self.model.set_training_step(
+                            self.global_step, total_optimizer_steps
+                        )
+                    if (
+                        self.ema_model is not None
+                        and hasattr(self.ema_model, "set_training_step")
+                    ):
+                        self.ema_model.set_training_step(
+                            self.global_step, total_optimizer_steps
+                        )
+
                     self.optimizer.zero_grad(set_to_none=True)
                     raw_loss, metrics = self.model.compute_loss(
                         batch,
@@ -212,6 +230,10 @@ class TrainDriftingBSplineImageWorkspace(BaseWorkspace):
                     if self.ema_model is not None
                     else self.model
                 )
+                if hasattr(policy, "set_training_step"):
+                    policy.set_training_step(
+                        self.global_step, total_optimizer_steps
+                    )
                 policy.eval()
 
                 if self.epoch % int(cfg.training.rollout_every) == 0:

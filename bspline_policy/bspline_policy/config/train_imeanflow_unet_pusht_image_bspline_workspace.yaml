@@ -1,0 +1,131 @@
+defaults:
+  - _self_
+  - task: pusht_image_bspline
+
+name: train_imeanflow_unet_pusht_image_bspline
+_target_: bspline_policy.workspace.train_imeanflow_bspline_image_workspace.TrainIMeanFlowBSplineImageWorkspace
+
+task_name: ${task.name}
+shape_meta: ${task.shape_meta}
+exp_name: imeanflow_bspline_curve_loss
+
+horizon: 16
+n_obs_steps: 2
+n_action_steps: 8
+n_latency_steps: 0
+dataset_obs_steps: ${n_obs_steps}
+past_action_visible: false
+obs_as_global_cond: true
+
+policy:
+  _target_: bspline_policy.policy.imeanflow_unet_pusht_bspline_image_policy.IMeanFlowUnetPushTBSplineImagePolicy
+  shape_meta: ${shape_meta}
+  horizon: ${horizon}
+  n_action_steps: ${horizon}
+  execution_action_steps: ${n_action_steps}
+  n_obs_steps: ${n_obs_steps}
+  obs_as_global_cond: ${obs_as_global_cond}
+  crop_shape: [84, 84]
+  diffusion_step_embed_dim: 128
+  down_dims: [512, 1024, 2048]
+  kernel_size: 5
+  n_groups: 8
+  cond_predict_scale: true
+  obs_encoder_group_norm: true
+  eval_fixed_crop: true
+  use_auxiliary_head: true
+
+  num_inference_steps: 1
+  clip_sample: true
+  data_proportion: 0.5
+  p_mean: -0.4
+  p_std: 1.0
+  adaptive_loss: true
+  norm_p: 1.0
+  norm_eps: 0.01
+  auxiliary_loss_weight: 1.0
+
+  bspline_degree: ${task.dataset.bspline_degree}
+  relative_knots: ${task.dataset.relative_knots}
+  min_knot_delta: 1.0e-4
+  rollout_decode_mode: raw_time_clamp
+  reconstruction_loss_weight: 0.05
+  reconstruction_warmup_ratio: 0.1
+
+ema:
+  _target_: diffusion_policy.model.diffusion.ema_model.EMAModel
+  update_after_step: 0
+  inv_gamma: 1.0
+  power: 0.75
+  min_value: 0.0
+  max_value: 0.9999
+
+dataloader:
+  batch_size: 64
+  num_workers: 8
+  shuffle: true
+  pin_memory: true
+  persistent_workers: false
+
+val_dataloader:
+  batch_size: 64
+  num_workers: 8
+  shuffle: false
+  pin_memory: true
+  persistent_workers: false
+
+optimizer:
+  _target_: torch.optim.AdamW
+  lr: 1.0e-4
+  betas: [0.95, 0.999]
+  eps: 1.0e-8
+  weight_decay: 1.0e-6
+
+training:
+  device: cuda:0
+  seed: 42
+  debug: false
+  resume: true
+  lr_scheduler: cosine
+  lr_warmup_steps: 500
+  num_epochs: 300
+  gradient_accumulate_every: 1
+  use_ema: true
+  rollout_every: 50
+  checkpoint_every: 50
+  val_every: 1
+  sample_every: 5
+  max_train_steps: null
+  max_val_steps: null
+  tqdm_interval_sec: 1.0
+
+logging:
+  project: bspline_policy_pusht
+  resume: true
+  mode: online
+  name: ${now:%Y.%m.%d-%H.%M.%S}_${name}_${task_name}
+  tags: ["${name}", "${task_name}", "${exp_name}"]
+  id: null
+  group: null
+
+checkpoint:
+  topk:
+    monitor_key: test_mean_score
+    mode: max
+    k: 5
+    format_str: "epoch={epoch:04d}-test_mean_score={test_mean_score:.3f}.ckpt"
+  save_last_ckpt: true
+  save_last_snapshot: false
+
+multi_run:
+  run_dir: data/outputs/${now:%Y.%m.%d}/${now:%H.%M.%S}_${name}_${task_name}
+  wandb_name_base: ${now:%Y.%m.%d-%H.%M.%S}_${name}_${task_name}
+
+hydra:
+  job:
+    override_dirname: ${name}
+  run:
+    dir: data/outputs/${now:%Y.%m.%d}/${now:%H.%M.%S}_${name}_${task_name}
+  sweep:
+    dir: data/outputs/${now:%Y.%m.%d}/${now:%H.%M.%S}_${name}_${task_name}
+    subdir: ${hydra.job.num}

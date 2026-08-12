@@ -75,9 +75,12 @@ class ConditionalUnet1D(nn.Module):
         down_dims=[256,512,1024],
         kernel_size=3,
         n_groups=8,
-        cond_predict_scale=False
+        cond_predict_scale=False,
+        output_dim=None,
         ):
         super().__init__()
+        if output_dim is None:
+            output_dim = input_dim
         all_dims = [input_dim] + list(down_dims)
         start_dim = down_dims[0]
 
@@ -157,7 +160,7 @@ class ConditionalUnet1D(nn.Module):
         
         final_conv = nn.Sequential(
             Conv1dBlock(start_dim, start_dim, kernel_size=kernel_size),
-            nn.Conv1d(start_dim, input_dim, 1),
+            nn.Conv1d(start_dim, output_dim, 1),
         )
 
         self.diffusion_step_encoder = diffusion_step_encoder
@@ -179,7 +182,7 @@ class ConditionalUnet1D(nn.Module):
         timestep: (B,) or int, diffusion step
         local_cond: (B,T,local_cond_dim)
         global_cond: (B,global_cond_dim)
-        output: (B,T,input_dim)
+        output: (B,T,output_dim)
         """
         sample = einops.rearrange(sample, 'b h t -> b t h')
 
@@ -239,4 +242,3 @@ class ConditionalUnet1D(nn.Module):
 
         x = einops.rearrange(x, 'b t h -> b h t')
         return x
-
