@@ -1,0 +1,60 @@
+name: robocasa_turn_off_microwave_human52_bspline
+
+shape_meta: &shape_meta
+  obs:
+    robot0_agentview_left_rgb:
+      shape: [3, 224, 224]
+      type: rgb
+    robot0_agentview_right_rgb:
+      shape: [3, 224, 224]
+      type: rgb
+    robot0_eye_in_hand_rgb:
+      shape: [3, 224, 224]
+      type: rgb
+    ee_pos:
+      shape: [3]
+      type: low_dim
+    ee_ori:
+      shape: [3]
+      type: low_dim
+    gripper_states:
+      shape: [2]
+      type: low_dim
+  # The legacy dataset stores 12 PandaMobile action channels. Only the first
+  # seven vary for TurnOffMicrowave: delta EEF pose (6) and gripper (1).
+  action:
+    shape: [7]
+
+dataset_path: &dataset_path ../data/robocasa/nvidia_RoboCasa-Cosmos-Policy/success_only/kitchen_microwave/TurnOffMicrowave/2024-04-25/demo_gentex_im128_randcams.hdf5
+
+env_runner:
+  _target_: bspline_policy.env_runner.offline_image_runner.OfflineImageRunner
+
+dataset:
+  _target_: bspline_policy.dataset.robomimic_replay_bspline_image_dataset.RobomimicReplayBSplineImageDataset
+  shape_meta: *shape_meta
+  dataset_path: *dataset_path
+  horizon: ${horizon}
+  pad_before: 0
+  pad_after: 0
+  n_obs_steps: ${dataset_obs_steps}
+  chunk_size: ${eval:'${horizon}-2*${task.dataset.bspline_degree}'}
+  bspline_degree: 3
+  max_error: 0.002
+  stride: 1
+  abs_action: false
+  rotation_rep: rotation_6d
+  relative_knots: false
+  raw_action_steps: ${n_action_steps}
+  action_indices: [0, 1, 2, 3, 4, 5, 6]
+  observation_history: true
+  use_cache: true
+  cache_base_path: data/cache/robocasa/turn_off_microwave_human52
+  cache_suffix: image224_delta_action7_bspline_v1
+  cache_decoded_replay: false
+  cache_preprocessed_samples: false
+  cache_preprocessed_device: cpu
+  cache_preprocessed_share_memory: false
+  cache_preprocessed_rgb_dtype: float32
+  seed: 42
+  val_ratio: 0.02

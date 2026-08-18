@@ -67,6 +67,7 @@ class RobomimicReplayImageDataset(BaseImageDataset):
             cache_preprocessed_share_memory=False,
             cache_preprocessed_rgb_dtype="float32",
             cache_suffix=None,
+            action_indices=None,
             seed=42,
             val_ratio=0.0
         ):
@@ -91,7 +92,8 @@ class RobomimicReplayImageDataset(BaseImageDataset):
                             shape_meta=shape_meta, 
                             dataset_path=dataset_path, 
                             abs_action=abs_action, 
-                            rotation_transformer=rotation_transformer)
+                            rotation_transformer=rotation_transformer,
+                            action_indices=action_indices)
                         print('Saving cache to disk.')
                         with zarr.ZipStore(cache_zarr_path) as zip_store:
                             replay_buffer.save_to_store(
@@ -120,7 +122,8 @@ class RobomimicReplayImageDataset(BaseImageDataset):
                 shape_meta=shape_meta, 
                 dataset_path=dataset_path, 
                 abs_action=abs_action, 
-                rotation_transformer=rotation_transformer)
+                rotation_transformer=rotation_transformer,
+                action_indices=action_indices)
             if cache_decoded_replay:
                 replay_buffer = ReplayBuffer.copy_from_store(
                     src_store=replay_buffer.root.store,
@@ -245,8 +248,10 @@ class RobomimicReplayImageDataset(BaseImageDataset):
                 this_normalizer = get_range_normalizer_from_stat(stat)
             elif key == 'base_pose':
                 this_normalizer = get_range_normalizer_from_stat(stat)
+            elif 'ori' in key or 'gripper' in key or 'state' in key:
+                this_normalizer = get_range_normalizer_from_stat(stat)
             else:
-                raise RuntimeError('unsupported')
+                raise RuntimeError(f'unsupported lowdim key: {key}')
             normalizer[key] = this_normalizer
 
         # image
@@ -460,8 +465,15 @@ def _convert_actions(raw_actions, abs_action, rotation_transformer, target_actio
 #         actions = raw_actions
 #     return actions
 
-def _convert_robomimic_to_replay(store, shape_meta, dataset_path, abs_action, rotation_transformer, 
-        n_workers=None, max_inflight_tasks=None):
+def _convert_robomimic_to_replay(
+        store,
+        shape_meta,
+        dataset_path,
+        abs_action,
+        rotation_transformer,
+        n_workers=None,
+        max_inflight_tasks=None,
+        action_indices=None):
     if n_workers is None:
         n_workers = multiprocessing.cpu_count()
     if max_inflight_tasks is None:
@@ -487,10 +499,16 @@ def _convert_robomimic_to_replay(store, shape_meta, dataset_path, abs_action, ro
     with h5py.File(dataset_path) as file:
         # count total steps
         demos = file['data']
+        demo_keys = sorted(
+            (key for key in demos.keys() if key.startswith('demo_')),
+            key=lambda key: int(key.removeprefix('demo_')),
+        )
+        if not demo_keys:
+            raise ValueError(f"No demo_* groups found in {dataset_path}")
         episode_ends = list()
         prev_end = 0
-        for i in range(len(demos)):
-            demo = demos[f'demo_{i}']
+        for demo_key in demo_keys:
+            demo = demos[demo_key]
             episode_length = demo['actions'].shape[0]
             episode_end = prev_end + episode_length
             prev_end = episode_end
@@ -506,11 +524,24 @@ def _convert_robomimic_to_replay(store, shape_meta, dataset_path, abs_action, ro
             if key == 'action':
                 data_key = 'actions'
             this_data = list()
-            for i in range(len(demos)):
-                demo = demos[f'demo_{i}']
+            for demo_key in demo_keys:
+                demo = demos[demo_key]
                 this_data.append(demo[data_key][:].astype(np.float32))
             this_data = np.concatenate(this_data, axis=0)
             if key == 'action':
+                if action_indices is not None:
+                    action_indices = np.asarray(action_indices, dtype=np.int64)
+                    if action_indices.ndim != 1 or action_indices.size == 0:
+                        raise ValueError(
+                            "action_indices must be a non-empty 1D sequence"
+                        )
+                    if np.any(action_indices < 0) or np.any(
+                            action_indices >= this_data.shape[-1]):
+                        raise ValueError(
+                            "action_indices contains an index outside raw "
+                            f"action dim {this_data.shape[-1]}"
+                        )
+                    this_data = this_data[..., action_indices]
                 this_data = _convert_actions(
                     raw_actions=this_data,
                     abs_action=abs_action,
@@ -554,8 +585,8 @@ def _convert_robomimic_to_replay(store, shape_meta, dataset_path, abs_action, ro
                         compressor=this_compressor,
                         dtype=np.uint8
                     )
-                    for episode_idx in range(len(demos)):
-                        demo = demos[f'demo_{episode_idx}']
+                    for episode_idx, demo_key in enumerate(demo_keys):
+                        demo = demos[demo_key]
                         hdf5_arr = demo['obs'][key]
                         for hdf5_idx in range(hdf5_arr.shape[0]):
                             if len(futures) >= max_inflight_tasks:

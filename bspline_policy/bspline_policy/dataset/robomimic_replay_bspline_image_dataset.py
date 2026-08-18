@@ -79,6 +79,7 @@ class RobomimicReplayBSplineImageDataset(BaseImageDataset):
         observation_history=False,
         cache_base_path=None,
         raw_action_steps=8,
+        action_indices=None,
     ):
         rotation_transformer = RotationTransformer(
             from_rep="axis_angle", to_rep=rotation_rep
@@ -109,6 +110,7 @@ class RobomimicReplayBSplineImageDataset(BaseImageDataset):
                             dataset_path=dataset_path,
                             abs_action=abs_action,
                             rotation_transformer=rotation_transformer,
+                            action_indices=action_indices,
                         )
                         print("Saving cache to disk.")
                         with zarr.ZipStore(cache_zarr_path) as zip_store:
@@ -140,6 +142,7 @@ class RobomimicReplayBSplineImageDataset(BaseImageDataset):
                 dataset_path=dataset_path,
                 abs_action=abs_action,
                 rotation_transformer=rotation_transformer,
+                action_indices=action_indices,
             )
             if cache_decoded_replay:
                 replay_buffer = ReplayBuffer.copy_from_store(
@@ -223,6 +226,11 @@ class RobomimicReplayBSplineImageDataset(BaseImageDataset):
         self.stride = stride
         self.relative_knots = bool(relative_knots)
         self.raw_action_steps = int(raw_action_steps)
+        self.action_indices = (
+            None
+            if action_indices is None
+            else tuple(int(index) for index in action_indices)
+        )
         self.n_action_steps = n_action_steps
         self.n_action_channels = n_action_channels
         self.cache_decoded_replay = cache_decoded_replay
@@ -342,6 +350,8 @@ class RobomimicReplayBSplineImageDataset(BaseImageDataset):
             elif "qpos" in key:
                 this_normalizer = get_range_normalizer_from_stat(stat)
             elif key == "base_pose":
+                this_normalizer = get_range_normalizer_from_stat(stat)
+            elif "ori" in key or "gripper" in key or "state" in key:
                 this_normalizer = get_range_normalizer_from_stat(stat)
             else:
                 raise RuntimeError(f"unsupported lowdim key: {key}")

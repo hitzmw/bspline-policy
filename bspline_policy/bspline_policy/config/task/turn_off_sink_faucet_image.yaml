@@ -1,0 +1,56 @@
+name: robocasa_turn_off_sink_faucet_human50
+
+shape_meta: &shape_meta
+  obs:
+    robot0_agentview_left_rgb:
+      shape: [3, 224, 224]
+      type: rgb
+    robot0_agentview_right_rgb:
+      shape: [3, 224, 224]
+      type: rgb
+    robot0_eye_in_hand_rgb:
+      shape: [3, 224, 224]
+      type: rgb
+    ee_pos:
+      shape: [3]
+      type: low_dim
+    ee_ori:
+      shape: [3]
+      type: low_dim
+    gripper_states:
+      shape: [2]
+      type: low_dim
+  action:
+    shape: [7]
+
+dataset_path: &dataset_path ../data/robocasa/nvidia_RoboCasa-Cosmos-Policy/success_only/kitchen_sink/TurnOffSinkFaucet/2024-04-25/demo_gentex_im128_randcams.hdf5
+
+# Online RoboCasa rollouts are run separately in the isolated bsp-robocasa
+# environment. Training still records explicitly that no simulator rollout was
+# performed in this environment.
+env_runner:
+  _target_: bspline_policy.env_runner.offline_image_runner.OfflineImageRunner
+
+dataset:
+  _target_: diffusion_policy.dataset.robomimic_replay_image_dataset.RobomimicReplayImageDataset
+  shape_meta: *shape_meta
+  dataset_path: *dataset_path
+  horizon: ${horizon}
+  pad_before: ${eval:'${n_obs_steps}-1+${n_latency_steps}'}
+  pad_after: ${eval:'${n_action_steps}-1'}
+  n_obs_steps: ${dataset_obs_steps}
+  abs_action: false
+  rotation_rep: rotation_6d
+  use_legacy_normalizer: false
+  use_cache: true
+  cache_suffix: image224_delta_action7_dp_h16_v1
+  cache_decoded_replay: false
+  cache_preprocessed_samples: false
+  cache_preprocessed_device: cpu
+  cache_preprocessed_share_memory: false
+  cache_preprocessed_rgb_dtype: float32
+  # Human-50 stores 12 PandaMobile channels; the policy contract is the first
+  # seven varying delta-EEF and gripper channels.
+  action_indices: [0, 1, 2, 3, 4, 5, 6]
+  seed: 42
+  val_ratio: 0.02

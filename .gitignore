@@ -5,3 +5,24 @@ cloudml/
 simple_mobile/yam_teleop/data
 drifting_policy/
 .omc/
+
+# Local simulator installs and downloaded RoboCasa assets (about 8 GB).
+/third_party/robocasa-cosmos-policy/
+/third_party/cosmos-policy-reference/
+
+# Local datasets and generated experiment artifacts.
+**/data/
+**/local_outputs/
+**/wandb/
+*.hdf5
+*.h5
+*.ckpt
+*.zarr
+*.zarr.zip
+
+# Rollout and evaluation videos.
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.webm
