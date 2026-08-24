@@ -139,7 +139,7 @@ def stack_observation_history(
 
 
 class RoboCasaImageRunner(BaseImageRunner):
-    """Run a B-spline image policy directly in RoboCasa, one episode at a time."""
+    """Run an image policy directly in RoboCasa, one episode at a time."""
 
     def __init__(
         self,

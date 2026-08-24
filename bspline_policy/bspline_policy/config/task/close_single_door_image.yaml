@@ -1,4 +1,4 @@
-name: robocasa_close_single_door_human54_bspline
+name: robocasa_close_single_door_human54
 
 shape_meta: &shape_meta
   obs:
@@ -20,9 +20,8 @@ shape_meta: &shape_meta
     gripper_states:
       shape: [2]
       type: low_dim
-  # The legacy dataset stores 12 PandaMobile action channels. Keep the
-  # standard 7D delta-EEF pose (6) plus gripper (1) interface even though the
-  # CloseSingleDoor demonstrations hold the gripper action constant.
+  # Human-54 stores 12 PandaMobile channels. Direct Drifting predicts the
+  # standard seven delta-EEF pose (6) plus gripper (1) channels.
   action:
     shape: [7]
 
@@ -32,29 +31,23 @@ env_runner:
   _target_: bspline_policy.env_runner.offline_image_runner.OfflineImageRunner
 
 dataset:
-  _target_: bspline_policy.dataset.robomimic_replay_bspline_image_dataset.RobomimicReplayBSplineImageDataset
+  _target_: diffusion_policy.dataset.robomimic_replay_image_dataset.RobomimicReplayImageDataset
   shape_meta: *shape_meta
   dataset_path: *dataset_path
   horizon: ${horizon}
-  pad_before: 0
-  pad_after: 0
+  pad_before: ${eval:'${n_obs_steps}-1+${n_latency_steps}'}
+  pad_after: ${eval:'${n_action_steps}-1'}
   n_obs_steps: ${dataset_obs_steps}
-  chunk_size: ${eval:'${horizon}-2*${task.dataset.bspline_degree}'}
-  bspline_degree: 3
-  max_error: 0.002
-  stride: 1
   abs_action: false
   rotation_rep: rotation_6d
-  relative_knots: false
-  action_indices: [0, 1, 2, 3, 4, 5, 6]
-  observation_history: true
+  use_legacy_normalizer: false
   use_cache: true
-  cache_base_path: data/cache/robocasa/close_single_door_human54
-  cache_suffix: image224_delta_action7_bspline_v1
+  cache_suffix: image224_delta_action7_direct_h16_v1
   cache_decoded_replay: false
   cache_preprocessed_samples: false
   cache_preprocessed_device: cpu
   cache_preprocessed_share_memory: false
   cache_preprocessed_rgb_dtype: float32
+  action_indices: [0, 1, 2, 3, 4, 5, 6]
   seed: 42
   val_ratio: 0.02

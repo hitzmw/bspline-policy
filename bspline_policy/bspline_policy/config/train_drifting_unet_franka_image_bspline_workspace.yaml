@@ -1,13 +1,13 @@
 defaults:
   - _self_
-  - task: pusht_image_bspline
+  - task: franka_bowl_image_bspline
 
-name: train_imeanflow_unet_pusht_image_bspline
-_target_: bspline_policy.workspace.train_imeanflow_bspline_image_workspace.TrainIMeanFlowBSplineImageWorkspace
+name: train_drifting_unet_franka_image_bspline
+_target_: bspline_policy.workspace.train_drifting_bspline_image_workspace.TrainDriftingBSplineImageWorkspace
 
 task_name: ${task.name}
 shape_meta: ${task.shape_meta}
-exp_name: imeanflow_bspline_curve_loss
+exp_name: "drifting_bspline"
 
 horizon: 16
 n_obs_steps: 2
@@ -18,14 +18,16 @@ past_action_visible: false
 obs_as_global_cond: true
 
 policy:
-  _target_: bspline_policy.policy.imeanflow_unet_pusht_bspline_image_policy.IMeanFlowUnetPushTBSplineImagePolicy
+  _target_: bspline_policy.policy.drifting_unet_franka_bspline_image_policy.DriftingUnetFrankaBSplineImagePolicy
   shape_meta: ${shape_meta}
   horizon: ${horizon}
+  # The model returns all 16 B-spline parameter rows. 8 decoded physical
+  # control actions (20Hz -> 0.4s) are executed per chunk at deployment.
   n_action_steps: ${horizon}
   execution_action_steps: ${n_action_steps}
   n_obs_steps: ${n_obs_steps}
   obs_as_global_cond: ${obs_as_global_cond}
-  crop_shape: [84, 84]
+  crop_shape: [112, 112]
   diffusion_step_embed_dim: 128
   down_dims: [512, 1024, 2048]
   kernel_size: 5
@@ -33,24 +35,10 @@ policy:
   cond_predict_scale: true
   obs_encoder_group_norm: true
   eval_fixed_crop: true
-  use_auxiliary_head: true
-
-  num_inference_steps: 1
-  clip_sample: true
-  data_proportion: 0.5
-  p_mean: -0.4
-  p_std: 1.0
-  adaptive_loss: true
-  norm_p: 1.0
-  norm_eps: 0.01
-  auxiliary_loss_weight: 1.0
-
+  temperatures: [0.02, 0.05, 0.2]
+  per_timestep_loss: true
+  gen_per_label: 8
   bspline_degree: ${task.dataset.bspline_degree}
-  relative_knots: ${task.dataset.relative_knots}
-  min_knot_delta: 1.0e-4
-  rollout_decode_mode: raw_time_clamp
-  reconstruction_loss_weight: 0.05
-  reconstruction_warmup_ratio: 0.1
 
 ema:
   _target_: diffusion_policy.model.diffusion.ema_model.EMAModel
@@ -60,6 +48,8 @@ ema:
   min_value: 0.0
   max_value: 0.9999
 
+# Dual 128x128 cameras, crop 112: roughly a quarter of the Tool Hang pixel
+# budget, so batch 64 stays within 24G with the 8-candidate generation.
 dataloader:
   batch_size: 64
   num_workers: 8
@@ -82,17 +72,18 @@ optimizer:
   weight_decay: 1.0e-6
 
 training:
-  device: cuda:0
+  device: "cuda:0"
   seed: 42
   debug: false
   resume: true
-  lr_scheduler: cosine
+  lr_scheduler: constant_with_warmup
   lr_warmup_steps: 500
   num_epochs: 300
   gradient_accumulate_every: 1
   use_ema: true
-  rollout_every: 50
-  checkpoint_every: 50
+  # No simulator for real-robot data: never roll out.
+  rollout_every: 1000000
+  checkpoint_every: 25
   val_every: 1
   sample_every: 5
   max_train_steps: null
@@ -100,7 +91,7 @@ training:
   tqdm_interval_sec: 1.0
 
 logging:
-  project: bspline_policy_pusht
+  project: bspline_policy_franka
   resume: true
   mode: online
   name: ${now:%Y.%m.%d-%H.%M.%S}_${name}_${task_name}
@@ -110,10 +101,10 @@ logging:
 
 checkpoint:
   topk:
-    monitor_key: test_mean_score
-    mode: max
+    monitor_key: val_loss
+    mode: min
     k: 5
-    format_str: "epoch={epoch:04d}-test_mean_score={test_mean_score:.3f}.ckpt"
+    format_str: "epoch={epoch:04d}-val_loss={val_loss:.3f}.ckpt"
   save_last_ckpt: true
   save_last_snapshot: false
 

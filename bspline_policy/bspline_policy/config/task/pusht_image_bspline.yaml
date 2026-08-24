@@ -38,7 +38,6 @@ dataset:
   max_error: 1.0
   stride: 1
   relative_knots: false
-  raw_action_steps: ${n_action_steps}
   seed: 42
   val_ratio: 0.02
   max_train_episodes: 90

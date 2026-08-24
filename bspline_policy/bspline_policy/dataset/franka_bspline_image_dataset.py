@@ -1,3 +1,19 @@
+"""Franka real-robot pick-and-place (zarr) with B-spline action parameters.
+
+Data: /root/autodl-tmp/data/franka_collect.zarr
+  - 100 episodes, 20Hz (median dt 50ms)
+  - D435_color: fixed third-person view [128,128,3]
+  - D405_color: wrist (eye-in-hand) view [128,128,3]
+  - ee_pose: [6] xyz + euler
+  - gripper_position: scalar jaw width (0..0.08m)
+  - control: [8] action = 7 absolute joint position targets + binary gripper
+    command (+-1); control[t] tracks joint_positions[t+1] with corr ~0.99.
+
+Cloned from PushTBSplineImageDataset with Franka keys. The action for
+B-spline fitting is the raw ``control`` vector (absolute joint space), so
+deployment replays decoded actions directly through the same controller.
+"""
+
 from __future__ import annotations
 
 import copy
@@ -24,8 +40,8 @@ from diffusion_policy.dataset.base_dataset import BaseImageDataset
 from diffusion_policy.model.common.normalizer import LinearNormalizer
 
 
-class PushTBSplineImageDataset(BaseImageDataset):
-    """Push-T image observations paired with B-spline action parameters."""
+class FrankaBSplineImageDataset(BaseImageDataset):
+    """Franka dual-camera observations paired with B-spline action parameters."""
 
     def __init__(
         self,
@@ -34,7 +50,7 @@ class PushTBSplineImageDataset(BaseImageDataset):
         n_obs_steps: int = 2,
         chunk_size: int = 10,
         bspline_degree: int = 3,
-        max_error: float = 1.0,
+        max_error: float = 0.01,
         stride: int = 1,
         seed: int = 42,
         val_ratio: float = 0.02,
@@ -47,7 +63,13 @@ class PushTBSplineImageDataset(BaseImageDataset):
         self.replay_buffer = ReplayBuffer.copy_from_path(
             zarr_path,
             store=zarr.MemoryStore(),
-            keys=["img", "state", "action"],
+            keys=[
+                "D435_color",
+                "D405_color",
+                "ee_pose",
+                "gripper_position",
+                "control",
+            ],
         )
 
         val_mask = get_val_mask(
@@ -74,10 +96,12 @@ class PushTBSplineImageDataset(BaseImageDataset):
         )
         self.train_mask = train_mask
         self.n_action_steps = self.chunk_size + 2 * self.bspline_degree
-        self.n_action_channels = 1 + int(self.replay_buffer["action"].shape[-1])
+        self.n_action_channels = 1 + int(self.replay_buffer["control"].shape[-1])
         self.key_first_k = {
-            "img": self.n_obs_steps,
-            "state": self.n_obs_steps,
+            "D435_color": self.n_obs_steps,
+            "D405_color": self.n_obs_steps,
+            "ee_pose": self.n_obs_steps,
+            "gripper_position": self.n_obs_steps,
         }
 
         if self.n_action_steps != self.horizon:
@@ -88,15 +112,15 @@ class PushTBSplineImageDataset(BaseImageDataset):
 
         self.sampler = self._make_sampler(self.train_mask)
         if len(self.sampler) == 0:
-            raise RuntimeError("Push-T B-spline training split is empty")
+            raise RuntimeError("Franka B-spline training split is empty")
 
-        action_shape = self.sampler.sample_sequence(0)["action"].shape
+        action_shape = self.sampler.sample_sequence(0)["control"].shape
         expected_shape = (self.n_action_steps, self.n_action_channels)
         if action_shape != expected_shape:
             raise AssertionError(
                 f"Expected B-spline action shape {expected_shape}, got {action_shape}"
             )
-        print(f"Push-T B-spline action shape: {action_shape}")
+        print(f"Franka B-spline action shape: {action_shape}")
 
     def _make_sampler(self, episode_mask: np.ndarray) -> BSplineChunkSampler:
         cache_path = None
@@ -124,9 +148,15 @@ class PushTBSplineImageDataset(BaseImageDataset):
             max_error=self.max_error,
             stride=self.stride,
             episode_mask=episode_mask,
-            keys=["img", "state", "action"],
+            keys=[
+                "D435_color",
+                "D405_color",
+                "ee_pose",
+                "gripper_position",
+                "control",
+            ],
             key_first_k=self.key_first_k,
-            action_key="action",
+            action_key="control",
             n_action_steps=self.n_action_steps,
             n_action_channels=self.n_action_channels,
             relative_knots=self.relative_knots,
@@ -143,6 +173,14 @@ class PushTBSplineImageDataset(BaseImageDataset):
         del kwargs
         normalizer = LinearNormalizer()
 
+        def f32(stats):
+            # zarr stores ee_pose/control as float64; keep all normalizer
+            # params float32 so normalized tensors stay float32.
+            return {
+                key: np.asarray(value, dtype=np.float32)
+                for key, value in stats.items()
+            }
+
         action_stats = self.sampler.get_action_stats()
         channel_stats = {
             "min": np.min(action_stats["min"], axis=1, keepdims=True),
@@ -157,11 +195,20 @@ class PushTBSplineImageDataset(BaseImageDataset):
             ).reshape(-1)
             for key, value in channel_stats.items()
         }
-        normalizer["action"] = get_range_normalizer_from_stat(stat)
+        normalizer["action"] = get_range_normalizer_from_stat(f32(stat))
 
-        agent_pos_stats = array_to_stats(self.replay_buffer["state"][:, :2])
-        normalizer["agent_pos"] = get_range_normalizer_from_stat(agent_pos_stats)
-        normalizer["image"] = get_image_range_normalizer()
+        ee_pose_stats = array_to_stats(self.replay_buffer["ee_pose"])
+        normalizer["ee_pose"] = get_range_normalizer_from_stat(
+            f32(ee_pose_stats)
+        )
+        gripper_stats = array_to_stats(
+            np.asarray(self.replay_buffer["gripper_position"])[:, None]
+        )
+        normalizer["gripper_pos"] = get_range_normalizer_from_stat(
+            f32(gripper_stats)
+        )
+        normalizer["sideview_image"] = get_image_range_normalizer()
+        normalizer["wrist_image"] = get_image_range_normalizer()
         return normalizer
 
     def get_all_actions(self) -> torch.Tensor:
@@ -172,13 +219,19 @@ class PushTBSplineImageDataset(BaseImageDataset):
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         sample = self.sampler.sample_sequence(idx)
-        image = np.moveaxis(sample["img"], -1, 1).astype(np.float32)
-        image *= 1.0 / 255.0
+        sideview = np.moveaxis(sample["D435_color"], -1, 1).astype(np.float32)
+        sideview *= 1.0 / 255.0
+        wrist = np.moveaxis(sample["D405_color"], -1, 1).astype(np.float32)
+        wrist *= 1.0 / 255.0
         data = {
             "obs": {
-                "image": np.ascontiguousarray(image),
-                "agent_pos": sample["state"][:, :2].astype(np.float32),
+                "sideview_image": np.ascontiguousarray(sideview),
+                "wrist_image": np.ascontiguousarray(wrist),
+                "ee_pose": sample["ee_pose"].astype(np.float32),
+                "gripper_pos": sample["gripper_position"][..., None].astype(
+                    np.float32
+                ),
             },
-            "action": sample["action"].astype(np.float32),
+            "action": sample["control"].astype(np.float32),
         }
         return dict_apply(data, torch.from_numpy)

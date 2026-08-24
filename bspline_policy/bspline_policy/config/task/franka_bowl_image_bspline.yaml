@@ -1,0 +1,40 @@
+name: franka_bowl_image_bspline
+
+shape_meta: &shape_meta
+  obs:
+    sideview_image:
+      shape: [3, 128, 128]
+      type: rgb
+    wrist_image:
+      shape: [3, 128, 128]
+      type: rgb
+    ee_pose:
+      shape: [6]
+      type: low_dim
+    gripper_pos:
+      shape: [1]
+      type: low_dim
+  # Physical action: control = 7 absolute joint targets + gripper (+-1).
+  # The dataset adds one knot channel and emits [16, 9] parameters.
+  action:
+    shape: [8]
+
+# Real-robot data: no simulator exists, so rollouts are disabled
+# (training.rollout_every is set far beyond num_epochs).
+env_runner:
+  _target_: bspline_policy.env_runner.null_image_runner.NullImageRunner
+
+dataset:
+  _target_: bspline_policy.dataset.franka_bspline_image_dataset.FrankaBSplineImageDataset
+  zarr_path: /root/autodl-tmp/data/franka_collect.zarr
+  horizon: ${horizon}
+  n_obs_steps: ${dataset_obs_steps}
+  chunk_size: ${eval:'${horizon}-2*${task.dataset.bspline_degree}'}
+  bspline_degree: 3
+  max_error: 0.01
+  stride: 1
+  relative_knots: false
+  seed: 42
+  val_ratio: 0.02
+  max_train_episodes: null
+  cache_base_path: data/cache/franka/franka_collect

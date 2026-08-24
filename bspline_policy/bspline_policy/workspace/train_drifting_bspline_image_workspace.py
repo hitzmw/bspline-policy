@@ -24,10 +24,11 @@ from diffusion_policy.model.diffusion.ema_model import EMAModel
 from diffusion_policy.workspace.base_workspace import BaseWorkspace
 
 
-class TrainDriftingBSplineImageWorkspace(BaseWorkspace):
-    """Reference Drifting training loop connected to B-spline datasets."""
+class _TrainDriftingImageWorkspaceBase(BaseWorkspace):
+    """Representation-agnostic training loop for Drifting image policies."""
 
     include_keys = ("global_step", "epoch")
+    training_label = "Drifting"
 
     def __init__(self, cfg: OmegaConf, output_dir=None):
         super().__init__(cfg, output_dir=output_dir)
@@ -65,7 +66,7 @@ class TrainDriftingBSplineImageWorkspace(BaseWorkspace):
         cfg = copy.deepcopy(self.cfg)
         if int(cfg.training.gradient_accumulate_every) != 1:
             raise ValueError(
-                "The canonical Drifting-BSpline configuration requires "
+                f"The canonical {self.training_label} configuration requires "
                 "gradient_accumulate_every=1"
             )
 
@@ -98,12 +99,6 @@ class TrainDriftingBSplineImageWorkspace(BaseWorkspace):
             ),
             last_epoch=self.global_step - 1,
         )
-        steps_per_epoch = len(train_dataloader)
-        if cfg.training.max_train_steps is not None:
-            steps_per_epoch = min(
-                steps_per_epoch, int(cfg.training.max_train_steps)
-            )
-        total_optimizer_steps = steps_per_epoch * int(cfg.training.num_epochs)
         ema: EMAModel | None = None
         if self.ema_model is not None:
             ema = hydra.utils.instantiate(cfg.ema, model=self.ema_model)
@@ -150,7 +145,7 @@ class TrainDriftingBSplineImageWorkspace(BaseWorkspace):
                 train_metrics = {}
                 progress = tqdm.tqdm(
                     train_dataloader,
-                    desc=f"Drifting-BSpline epoch {self.epoch}",
+                    desc=f"{self.training_label} epoch {self.epoch}",
                     leave=False,
                     mininterval=cfg.training.tqdm_interval_sec,
                 )
@@ -161,18 +156,6 @@ class TrainDriftingBSplineImageWorkspace(BaseWorkspace):
                     )
                     if train_sampling_batch is None:
                         train_sampling_batch = batch
-
-                    if hasattr(self.model, "set_training_step"):
-                        self.model.set_training_step(
-                            self.global_step, total_optimizer_steps
-                        )
-                    if (
-                        self.ema_model is not None
-                        and hasattr(self.ema_model, "set_training_step")
-                    ):
-                        self.ema_model.set_training_step(
-                            self.global_step, total_optimizer_steps
-                        )
 
                     self.optimizer.zero_grad(set_to_none=True)
                     raw_loss, metrics = self.model.compute_loss(
@@ -230,10 +213,6 @@ class TrainDriftingBSplineImageWorkspace(BaseWorkspace):
                     if self.ema_model is not None
                     else self.model
                 )
-                if hasattr(policy, "set_training_step"):
-                    policy.set_training_step(
-                        self.global_step, total_optimizer_steps
-                    )
                 policy.eval()
 
                 if self.epoch % int(cfg.training.rollout_every) == 0:
@@ -328,3 +307,9 @@ class TrainDriftingBSplineImageWorkspace(BaseWorkspace):
                 self.epoch += 1
 
         wandb_run.finish()
+
+
+class TrainDriftingBSplineImageWorkspace(_TrainDriftingImageWorkspaceBase):
+    """Train a Drifting image policy on B-spline parameter targets."""
+
+    training_label = "Drifting-BSpline"

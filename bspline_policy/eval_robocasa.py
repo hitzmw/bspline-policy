@@ -1,4 +1,4 @@
-"""Evaluate a trained B-spline checkpoint in RoboCasa v0.2."""
+"""Evaluate a trained image-policy checkpoint in RoboCasa v0.2."""
 
 from __future__ import annotations
 

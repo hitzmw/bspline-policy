@@ -78,7 +78,6 @@ class RobomimicReplayBSplineImageDataset(BaseImageDataset):
         cache_preprocessed_rgb_dtype="float32",
         observation_history=False,
         cache_base_path=None,
-        raw_action_steps=8,
         action_indices=None,
     ):
         rotation_transformer = RotationTransformer(
@@ -225,7 +224,6 @@ class RobomimicReplayBSplineImageDataset(BaseImageDataset):
         self.max_error = max_error
         self.stride = stride
         self.relative_knots = bool(relative_knots)
-        self.raw_action_steps = int(raw_action_steps)
         self.action_indices = (
             None
             if action_indices is None
@@ -337,9 +335,6 @@ class RobomimicReplayBSplineImageDataset(BaseImageDataset):
                 channel_stats[key], (1, n_action_steps, n_channels)
             ).reshape(-1)
         normalizer["action"] = get_range_normalizer_from_stat(stat)
-        normalizer["raw_action"] = get_range_normalizer_from_stat(
-            array_to_stats(self.replay_buffer["action"])
-        )
 
         for key in self.lowdim_keys:
             stat = array_to_stats(self.replay_buffer[key])
@@ -417,11 +412,6 @@ class RobomimicReplayBSplineImageDataset(BaseImageDataset):
         )
         threadpool_limits(1)
         data = self.sampler.sample_sequence(idx)
-        reconstruction = self.sampler.sample_reconstruction_sequence(
-            idx,
-            num_actions=self.raw_action_steps,
-            action_params=data["action"],
-        )
         if self.observation_history:
             for key in self.rgb_keys + self.lowdim_keys:
                 data[key] = self._get_observation_history(idx, key)
@@ -443,18 +433,6 @@ class RobomimicReplayBSplineImageDataset(BaseImageDataset):
         return {
             "obs": dict_apply(obs_dict, torch.from_numpy),
             "action": torch.from_numpy(data["action"].astype(np.float32)),
-            "raw_action": torch.from_numpy(
-                reconstruction["raw_action"].astype(np.float32)
-            ),
-            "raw_action_time": torch.from_numpy(
-                reconstruction["raw_action_time"]
-            ),
-            "raw_action_mask": torch.from_numpy(
-                reconstruction["raw_action_mask"]
-            ),
-            "raw_action_episode_mask": torch.from_numpy(
-                reconstruction["raw_action_episode_mask"]
-            ),
         }
 
     def _build_preprocessed_cache(self, device: str = "cpu", share_memory: bool = False):
@@ -473,18 +451,6 @@ class RobomimicReplayBSplineImageDataset(BaseImageDataset):
             device=torch.device(device),
             share_memory=share_memory,
             rgb_dtype=self.cache_preprocessed_rgb_dtype,
-            extra_shapes_and_dtypes={
-                "raw_action": (
-                    (self.raw_action_steps, self.n_action_channels - 1),
-                    torch.float32,
-                ),
-                "raw_action_time": ((self.raw_action_steps,), torch.float32),
-                "raw_action_mask": ((self.raw_action_steps,), torch.bool),
-                "raw_action_episode_mask": (
-                    (self.raw_action_steps,),
-                    torch.bool,
-                ),
-            },
         )
         self._preprocessed_cache = build_preprocessed_sample_cache(
             length=len(self),

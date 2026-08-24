@@ -9,6 +9,7 @@ import numpy as np
 import multiprocessing as mp
 import time
 import sys
+import inspect
 from enum import Enum
 from copy import deepcopy
 
@@ -31,6 +32,38 @@ from gym.vector.utils import (
 )
 
 __all__ = ["AsyncVectorEnv"]
+
+
+# Gym changed the positional order of these vector utility functions.  The
+# project supports environments with both the 0.21 API and the newer API, so
+# route arguments by the installed signature rather than assuming one version.
+_read_shared_space_first = (
+    next(iter(inspect.signature(read_from_shared_memory).parameters)) == "space"
+)
+_write_shared_space_first = (
+    next(iter(inspect.signature(write_to_shared_memory).parameters)) == "space"
+)
+_concatenate_space_first = (
+    next(iter(inspect.signature(concatenate).parameters)) == "space"
+)
+
+
+def _read_shared_memory(shared_memory, space, n):
+    if _read_shared_space_first:
+        return read_from_shared_memory(space, shared_memory, n=n)
+    return read_from_shared_memory(shared_memory, space, n=n)
+
+
+def _write_shared_memory(space, index, value, shared_memory):
+    if _write_shared_space_first:
+        return write_to_shared_memory(space, index, value, shared_memory)
+    return write_to_shared_memory(index, value, shared_memory, space)
+
+
+def _concatenate_observations(space, items, output):
+    if _concatenate_space_first:
+        return concatenate(space, items, output)
+    return concatenate(items, output, space)
 
 
 class AsyncState(Enum):
@@ -118,9 +151,8 @@ class AsyncVectorEnv(VectorEnv):
                 _obs_buffer = create_shared_memory(
                     self.single_observation_space, n=self.num_envs, ctx=ctx
                 )
-                self.observations = read_from_shared_memory(
-                    self.single_observation_space, _obs_buffer, n=self.num_envs
-                )
+                self.observations = _read_shared_memory(
+                    _obs_buffer, self.single_observation_space, n=self.num_envs)
             except CustomSpaceError:
                 raise ValueError(
                     "Using `shared_memory=True` in `AsyncVectorEnv` "
@@ -232,9 +264,8 @@ class AsyncVectorEnv(VectorEnv):
         self._state = AsyncState.DEFAULT
 
         if not self.shared_memory:
-            self.observations = concatenate(
-                self.single_observation_space, results, self.observations
-            )
+            self.observations = _concatenate_observations(
+                self.single_observation_space, results, self.observations)
 
         return deepcopy(self.observations) if self.copy else self.observations
 
@@ -295,7 +326,7 @@ class AsyncVectorEnv(VectorEnv):
         observations_list, rewards, dones, infos = zip(*results)
 
         if not self.shared_memory:
-            self.observations = concatenate(
+            self.observations = _concatenate_observations(
                 self.single_observation_space,
                 observations_list,
                 self.observations,
@@ -626,17 +657,15 @@ def _worker_shared_memory(index, env_fn, pipe, parent_pipe, shared_memory, error
             command, data = pipe.recv()
             if command == "reset":
                 observation = env.reset()
-                write_to_shared_memory(
-                    observation_space, index, observation, shared_memory
-                )
+                _write_shared_memory(
+                    observation_space, index, observation, shared_memory)
                 pipe.send((None, True))
             elif command == "step":
                 observation, reward, done, info = env.step(data)
                 # if done:
                 #     observation = env.reset()
-                write_to_shared_memory(
-                    observation_space, index, observation, shared_memory
-                )
+                _write_shared_memory(
+                    observation_space, index, observation, shared_memory)
                 pipe.send(((None, reward, done, info), True))
             elif command == "seed":
                 env.seed(data)
