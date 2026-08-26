@@ -274,9 +274,13 @@ class _TrainDriftingImageWorkspaceBase(BaseWorkspace):
                     and self.epoch % int(cfg.training.sample_every) == 0
                 ):
                     with torch.no_grad():
-                        prediction = policy.predict_action(
+                        prediction_result = policy.predict_action(
                             train_sampling_batch["obs"]
-                        )["action_pred"]
+                        )
+                        prediction = prediction_result.get(
+                            "joint_action_pred",
+                            prediction_result["action_pred"],
+                        )
                         target = train_sampling_batch["action"]
                         epoch_log["train_action_mse_error"] = float(
                             torch.nn.functional.mse_loss(
@@ -286,6 +290,26 @@ class _TrainDriftingImageWorkspaceBase(BaseWorkspace):
                             .detach()
                             .cpu()
                         )
+                        if "joint_action_pred" in prediction_result:
+                            bspline_action_dim = int(
+                                policy.bspline_action_dim
+                            )
+                            epoch_log["train_bspline_mse_error"] = float(
+                                torch.nn.functional.mse_loss(
+                                    prediction[..., :bspline_action_dim],
+                                    target[..., :bspline_action_dim],
+                                )
+                                .detach()
+                                .cpu()
+                            )
+                            epoch_log["train_raw_action_mse_error"] = float(
+                                torch.nn.functional.mse_loss(
+                                    prediction[..., bspline_action_dim:],
+                                    target[..., bspline_action_dim:],
+                                )
+                                .detach()
+                                .cpu()
+                            )
 
                 if self.epoch % int(cfg.training.checkpoint_every) == 0:
                     if cfg.checkpoint.save_last_ckpt:

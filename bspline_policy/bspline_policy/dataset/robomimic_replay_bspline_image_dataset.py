@@ -13,6 +13,7 @@ from bspline_policy.common.bspline_action import (
     BSplineChunkSampler,
     make_bspline_sampler_cache_path,
 )
+from bspline_policy.common.knots import decode_relative_knots
 from diffusion_policy.common.normalize_util import (
     array_to_stats,
     get_identity_normalizer_from_stat,
@@ -49,7 +50,9 @@ class RobomimicReplayBSplineImageDataset(BaseImageDataset):
 
     This keeps the target repo's existing real bimanual conversion logic
     unchanged, then replaces the regular sequence sampler with
-    BSplineChunkSampler.
+    BSplineChunkSampler.  The opt-in ``raw_action_concat`` mode appends a
+    horizon of dense replay actions to every B-spline parameter row:
+    ``[knot, control..., raw_action...]``.
     """
 
     def __init__(
@@ -79,6 +82,8 @@ class RobomimicReplayBSplineImageDataset(BaseImageDataset):
         observation_history=False,
         cache_base_path=None,
         action_indices=None,
+        raw_action_concat=False,
+        raw_action_sampling_mode="current",
     ):
         rotation_transformer = RotationTransformer(
             from_rep="axis_angle", to_rep=rotation_rep
@@ -169,7 +174,7 @@ class RobomimicReplayBSplineImageDataset(BaseImageDataset):
 
         n_action_steps = int(chunk_size) + 2 * int(bspline_degree)
         n_control_dims = shape_meta["action"]["shape"][0]
-        n_action_channels = 1 + n_control_dims
+        n_bspline_action_channels = 1 + n_control_dims
 
         sampler_cache_path = None
         if use_cache:
@@ -185,7 +190,7 @@ class RobomimicReplayBSplineImageDataset(BaseImageDataset):
                 max_error=max_error,
                 stride=stride,
                 n_action_steps=n_action_steps,
-                n_action_channels=n_action_channels,
+                n_action_channels=n_bspline_action_channels,
                 relative_knots=relative_knots,
             )
 
@@ -199,7 +204,7 @@ class RobomimicReplayBSplineImageDataset(BaseImageDataset):
             key_first_k=key_first_k,
             action_key="action",
             n_action_steps=n_action_steps,
-            n_action_channels=n_action_channels,
+            n_action_channels=n_bspline_action_channels,
             relative_knots=relative_knots,
             cache_path=sampler_cache_path,
         )
@@ -229,8 +234,30 @@ class RobomimicReplayBSplineImageDataset(BaseImageDataset):
             if action_indices is None
             else tuple(int(index) for index in action_indices)
         )
+        self.raw_action_concat = bool(raw_action_concat)
+        self.raw_action_sampling_mode = str(raw_action_sampling_mode)
+        if self.raw_action_sampling_mode not in {
+            "current",
+            "bspline_interval",
+        }:
+            raise ValueError(
+                "raw_action_sampling_mode must be 'current' or "
+                "'bspline_interval'"
+            )
+        if (
+            not self.raw_action_concat
+            and self.raw_action_sampling_mode != "current"
+        ):
+            raise ValueError(
+                "raw_action_sampling_mode='bspline_interval' requires "
+                "raw_action_concat=True"
+            )
+        self.regular_action_dim = int(n_control_dims)
         self.n_action_steps = n_action_steps
-        self.n_action_channels = n_action_channels
+        self.n_bspline_action_channels = n_bspline_action_channels
+        self.n_action_channels = n_bspline_action_channels + (
+            self.regular_action_dim if self.raw_action_concat else 0
+        )
         self.cache_decoded_replay = cache_decoded_replay
         self.cache_preprocessed_samples = cache_preprocessed_samples
         self.cache_preprocessed_device = cache_preprocessed_device
@@ -242,7 +269,7 @@ class RobomimicReplayBSplineImageDataset(BaseImageDataset):
 
         if len(sampler) > 0:
             action_shape = sampler.sample_sequence(0)["action"].shape
-            expected_shape = (n_action_steps, n_action_channels)
+            expected_shape = (n_action_steps, n_bspline_action_channels)
             print(f"Action shape from B-spline sampler: {action_shape}")
             print(f"Expected shape: {expected_shape}")
             if action_shape != expected_shape:
@@ -277,7 +304,7 @@ class RobomimicReplayBSplineImageDataset(BaseImageDataset):
                 max_error=self.max_error,
                 stride=self.stride,
                 n_action_steps=self.n_action_steps,
-                n_action_channels=self.n_action_channels,
+                n_action_channels=self.n_bspline_action_channels,
                 relative_knots=self.relative_knots,
             )
 
@@ -291,7 +318,7 @@ class RobomimicReplayBSplineImageDataset(BaseImageDataset):
             key_first_k=key_first_k,
             action_key="action",
             n_action_steps=self.n_action_steps,
-            n_action_channels=self.n_action_channels,
+            n_action_channels=self.n_bspline_action_channels,
             relative_knots=self.relative_knots,
             cache_path=sampler_cache_path,
         )
@@ -321,14 +348,27 @@ class RobomimicReplayBSplineImageDataset(BaseImageDataset):
         normalizer = LinearNormalizer()
 
         action_stats = self.sampler.get_action_stats()
-        channel_stats = {
+        bspline_channel_stats = {
             "min": np.min(action_stats["min"], axis=1, keepdims=True),
             "max": np.max(action_stats["max"], axis=1, keepdims=True),
             "mean": np.mean(action_stats["mean"], axis=1, keepdims=True),
             "std": np.mean(action_stats["std"], axis=1, keepdims=True),
         }
         n_action_steps = action_stats["min"].shape[1]
-        n_channels = action_stats["min"].shape[2]
+        if self.raw_action_concat:
+            raw_action_stats = self._get_training_raw_action_stats()
+            channel_stats = {
+                key: np.concatenate(
+                    [
+                        bspline_channel_stats[key].reshape(-1),
+                        raw_action_stats[key].reshape(-1),
+                    ]
+                ).reshape(1, 1, -1)
+                for key in ("min", "max", "mean", "std")
+            }
+        else:
+            channel_stats = bspline_channel_stats
+        n_channels = channel_stats["min"].shape[2]
         stat = {}
         for key in ["min", "max", "mean", "std"]:
             stat[key] = np.broadcast_to(
@@ -358,6 +398,15 @@ class RobomimicReplayBSplineImageDataset(BaseImageDataset):
         return normalizer
 
     def get_all_actions(self) -> torch.Tensor:
+        if self.raw_action_concat:
+            actions = [
+                self._make_action_target(
+                    idx,
+                    self.sampler.sample_sequence(idx)["action"],
+                )
+                for idx in range(len(self))
+            ]
+            return torch.from_numpy(np.stack(actions))
         return torch.from_numpy(self.sampler.all_actions)
 
     def __len__(self):
@@ -399,6 +448,133 @@ class RobomimicReplayBSplineImageDataset(BaseImageDataset):
             )
         return history
 
+    def _get_raw_action_sequence(
+        self,
+        idx: int,
+        bspline_action: np.ndarray | None = None,
+    ) -> np.ndarray:
+        """Return dense actions aligned to the configured temporal contract.
+
+        ``current`` preserves the original current-to-future sequence for old
+        checkpoints. ``bspline_interval`` samples the replay trajectory at the
+        same uniformly spaced phase points used when the associated B-spline
+        is decoded, so the auxiliary target is time-aligned with rollout.
+        """
+        timestep = int(self.sampler.valid_timesteps[idx])
+        episode_index = int(
+            np.searchsorted(self.sampler.episode_ends, timestep, side="right")
+        )
+        episode_start = (
+            0
+            if episode_index == 0
+            else int(self.sampler.episode_ends[episode_index - 1])
+        )
+        episode_end = int(self.sampler.episode_ends[episode_index])
+
+        if self.raw_action_sampling_mode == "bspline_interval":
+            if bspline_action is None:
+                raise ValueError(
+                    "bspline_action is required for interval-aligned raw actions"
+                )
+            parameters = np.asarray(bspline_action, dtype=np.float32)
+            if self.relative_knots:
+                parameters = decode_relative_knots(
+                    parameters,
+                    degree=self.bspline_degree,
+                )
+            knots = parameters[:, 0]
+            t_min = float(knots[self.bspline_degree])
+            t_max = float(knots[-(self.bspline_degree + 1)])
+            if not np.isfinite(t_min) or not np.isfinite(t_max):
+                raise ValueError("B-spline knot interval must be finite")
+            if t_max <= t_min:
+                raise ValueError(
+                    f"Invalid B-spline raw-action interval: [{t_min}, {t_max}]"
+                )
+
+            positions = timestep + np.linspace(
+                t_min,
+                t_max,
+                self.n_action_steps,
+                dtype=np.float32,
+            )
+            positions = np.clip(
+                positions,
+                float(episode_start),
+                float(episode_end - 1),
+            )
+            left_indices = np.floor(positions).astype(np.int64)
+            right_indices = np.minimum(left_indices + 1, episode_end - 1)
+            interpolation_weight = (positions - left_indices).reshape(-1, 1)
+            # Zarr v2 supports basic indexing but not NumPy index arrays. Read
+            # the small contiguous episode once, then interpolate in memory.
+            episode_actions = np.asarray(
+                self.replay_buffer["action"][episode_start:episode_end],
+                dtype=np.float32,
+            )
+            left_actions = episode_actions[left_indices - episode_start]
+            right_actions = episode_actions[right_indices - episode_start]
+            actions = (
+                left_actions
+                + interpolation_weight * (right_actions - left_actions)
+            ).astype(np.float32)
+        else:
+            sequence_end = min(timestep + self.n_action_steps, episode_end)
+            actions = np.asarray(
+                self.replay_buffer["action"][timestep:sequence_end],
+                dtype=np.float32,
+            )
+            if len(actions) == 0:
+                raise RuntimeError(
+                    f"No raw action is available at timestep {timestep}"
+                )
+            missing = self.n_action_steps - len(actions)
+            if missing > 0:
+                actions = np.concatenate(
+                    [actions, np.repeat(actions[-1:], missing, axis=0)],
+                    axis=0,
+                )
+        expected_shape = (self.n_action_steps, self.regular_action_dim)
+        if actions.shape != expected_shape:
+            raise ValueError(
+                f"Expected raw action shape {expected_shape}, got {actions.shape}"
+            )
+        return actions
+
+    def _make_action_target(
+        self,
+        idx: int,
+        bspline_action: np.ndarray,
+    ) -> np.ndarray:
+        bspline_action = np.asarray(bspline_action, dtype=np.float32)
+        if not self.raw_action_concat:
+            return bspline_action
+        raw_action = self._get_raw_action_sequence(idx, bspline_action)
+        return np.concatenate([bspline_action, raw_action], axis=-1)
+
+    def _get_training_raw_action_stats(self) -> dict[str, np.ndarray]:
+        """Compute dense-action statistics from training episodes only."""
+        episode_ends = np.asarray(self.sampler.episode_ends, dtype=np.int64)
+        episode_mask = np.asarray(self.sampler.episode_mask, dtype=bool)
+        episode_starts = np.concatenate(
+            [np.zeros(1, dtype=np.int64), episode_ends[:-1]]
+        )
+        training_actions = [
+            np.asarray(
+                self.replay_buffer["action"][start:end],
+                dtype=np.float32,
+            )
+            for start, end, selected in zip(
+                episode_starts,
+                episode_ends,
+                episode_mask,
+            )
+            if selected and end > start
+        ]
+        if not training_actions:
+            raise RuntimeError("Cannot normalize raw actions from an empty split")
+        return array_to_stats(np.concatenate(training_actions, axis=0))
+
     def _sample_uncached_item(
         self,
         idx: int,
@@ -430,9 +606,11 @@ class RobomimicReplayBSplineImageDataset(BaseImageDataset):
             obs_dict[key] = data[key][t_slice].astype(np.float32)
             del data[key]
 
+        action = self._make_action_target(idx, data["action"])
+
         return {
             "obs": dict_apply(obs_dict, torch.from_numpy),
-            "action": torch.from_numpy(data["action"].astype(np.float32)),
+            "action": torch.from_numpy(action),
         }
 
     def _build_preprocessed_cache(self, device: str = "cpu", share_memory: bool = False):

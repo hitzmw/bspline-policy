@@ -1,0 +1,18 @@
+defaults:
+  - train_drifting_unet_coffee_press_button_image_bspline_workspace
+  - _self_
+
+name: drifting_bspline_raw_consistency_coffee
+exp_name: drifting_bspline_raw_consistency
+
+policy:
+  raw_action_concat: true
+  raw_action_training_mode: decode_consistency
+  raw_action_loss_weight: 0.1
+  raw_action_consistency_detach_knots: true
+
+task:
+  dataset:
+    raw_action_concat: true
+    raw_action_sampling_mode: bspline_interval
+    cache_suffix: image224_delta_action7_bspline_raw_consistency_v2

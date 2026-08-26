@@ -15,18 +15,16 @@ CONFIG_DIRECTORY = (
 )
 
 
-def _compose_config():
+def _compose_config(
+    config_name="train_drifting_unet_pusht_image_bspline_workspace",
+):
     if not OmegaConf.has_resolver("eval"):
         OmegaConf.register_new_resolver("eval", eval)
     with initialize_config_dir(
         version_base=None,
         config_dir=str(CONFIG_DIRECTORY),
     ):
-        config = compose(
-            config_name=(
-                "train_drifting_unet_pusht_image_bspline_workspace"
-            )
-        )
+        config = compose(config_name=config_name)
     OmegaConf.resolve(config)
     return config
 
@@ -63,6 +61,44 @@ def test_hydra_targets_are_importable():
     assert policy_class.__name__ == (
         "DriftingUnetPushTBSplineImagePolicy"
     )
+
+
+def test_raw_consistency_config_preserves_pusht_baseline_settings():
+    baseline = _compose_config()
+    config = _compose_config(
+        "train_drifting_unet_pusht_image_bspline_raw_concat_workspace"
+    )
+
+    assert config.policy.raw_action_concat is True
+    assert config.policy.raw_action_training_mode == "decode_consistency"
+    assert config.policy.raw_action_loss_weight == 0.1
+    assert config.policy.raw_action_consistency_detach_knots is True
+    assert config.task.dataset.raw_action_concat is True
+    assert config.task.dataset.raw_action_sampling_mode == "bspline_interval"
+    assert config.exp_name == "drifting_bspline_raw_consistency"
+    assert list(config.shape_meta.action.shape) == [2]
+    assert 1 + 2 * int(config.shape_meta.action.shape[0]) == 5
+
+    for key in (
+        "horizon",
+        "n_obs_steps",
+        "n_action_steps",
+        "dataloader",
+        "val_dataloader",
+        "optimizer",
+        "training",
+        "ema",
+    ):
+        config_value = config[key]
+        baseline_value = baseline[key]
+        if OmegaConf.is_config(config_value):
+            config_value = OmegaConf.to_container(config_value, resolve=True)
+        if OmegaConf.is_config(baseline_value):
+            baseline_value = OmegaConf.to_container(
+                baseline_value,
+                resolve=True,
+            )
+        assert config_value == baseline_value
 
 
 def test_workspace_constructs_model_ema_and_optimizer():

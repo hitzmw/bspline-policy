@@ -446,3 +446,113 @@ def decode_bspline_action(
     return BSpline(knots, control_points, degree, extrapolate=False)(t_eval).astype(
         np.float32
     )
+
+
+def project_monotonic_knots_torch(
+    action_params: torch.Tensor,
+    delta: float = 1e-4,
+) -> torch.Tensor:
+    """Differentiably match the rollout-time monotonic-knot projection.
+
+    ``action_params`` may contain arbitrary leading dimensions and must end in
+    ``[parameter_steps, 1 + action_dim]``. Control points are left unchanged.
+    """
+    if action_params.ndim < 2:
+        raise ValueError("action_params must end in [steps, channels]")
+    if action_params.shape[-1] < 2:
+        raise ValueError("action_params must contain knots and control points")
+    if float(delta) <= 0:
+        raise ValueError("delta must be positive")
+
+    knots = action_params[..., 0]
+    step_offsets = torch.arange(
+        knots.shape[-1],
+        device=knots.device,
+        dtype=knots.dtype,
+    ) * float(delta)
+    projected_knots = torch.cummax(knots - step_offsets, dim=-1).values
+    projected_knots = projected_knots + step_offsets
+    return torch.cat(
+        [projected_knots.unsqueeze(-1), action_params[..., 1:]],
+        dim=-1,
+    )
+
+
+def decode_bspline_action_torch(
+    action_params: torch.Tensor,
+    degree: int = 3,
+    num_actions: int = 8,
+) -> torch.Tensor:
+    """Evaluate B-spline parameters with PyTorch while preserving gradients.
+
+    Knot vectors must be strictly increasing. Call
+    :func:`project_monotonic_knots_torch` first for unconstrained predictions.
+    The evaluation grid matches :func:`decode_bspline_action`: it is uniform
+    over the spline's valid ``[t[degree], t[-degree-1]]`` interval.
+    """
+    if action_params.ndim < 2:
+        raise ValueError("action_params must end in [steps, channels]")
+    degree = int(degree)
+    num_actions = int(num_actions)
+    parameter_steps = int(action_params.shape[-2])
+    n_control_points = parameter_steps - degree - 1
+    if degree < 0:
+        raise ValueError("degree must be non-negative")
+    if n_control_points < 1:
+        raise ValueError(
+            "parameter_steps must be greater than degree + 1"
+        )
+    if num_actions < 1:
+        raise ValueError("num_actions must be positive")
+
+    knots = action_params[..., 0]
+    controls = action_params[..., :n_control_points, 1:]
+    t_min = knots[..., degree]
+    t_max = knots[..., -(degree + 1)]
+    if torch.any(t_max <= t_min):
+        raise ValueError("B-spline knot range must be strictly positive")
+
+    phase = torch.linspace(
+        0.0,
+        1.0,
+        num_actions,
+        device=action_params.device,
+        dtype=action_params.dtype,
+    )
+    evaluation_points = (
+        t_min.unsqueeze(-1)
+        + (t_max - t_min).unsqueeze(-1) * phase
+    )
+
+    left = knots[..., :-1].unsqueeze(-2)
+    right = knots[..., 1:].unsqueeze(-2)
+    points = evaluation_points.unsqueeze(-1)
+    basis = ((points >= left) & (points < right)).to(action_params.dtype)
+
+    # Cox-de Boor recursion. Strict projection makes every denominator
+    # positive, while the clamp protects float32 arithmetic near repeated
+    # boundary knots.
+    epsilon = torch.finfo(action_params.dtype).eps
+    for order in range(1, degree + 1):
+        output_size = parameter_steps - order - 1
+        left_denominator = (
+            knots[..., order : order + output_size]
+            - knots[..., :output_size]
+        ).unsqueeze(-2)
+        right_denominator = (
+            knots[..., order + 1 : order + 1 + output_size]
+            - knots[..., 1 : 1 + output_size]
+        ).unsqueeze(-2)
+        left_weight = (
+            points - knots[..., :output_size].unsqueeze(-2)
+        ) / left_denominator.clamp_min(epsilon)
+        right_weight = (
+            knots[..., order + 1 : order + 1 + output_size].unsqueeze(-2)
+            - points
+        ) / right_denominator.clamp_min(epsilon)
+        basis = (
+            left_weight * basis[..., :output_size]
+            + right_weight * basis[..., 1 : output_size + 1]
+        )
+
+    return torch.einsum("...kn,...nd->...kd", basis, controls)

@@ -143,6 +143,63 @@ settings: `batch_size=64`, `gen_per_label=8`,
 each optimizer update evaluates 512 generated trajectories and is intended
 for a large-memory training GPU. Inference remains NFE=1.
 
+### Drifting-BSpline Raw-Action Consistency
+
+The opt-in concat datasets provide a 16-row target with `1 + 2D` channels:
+
+```text
+[knot, D-dimensional B-spline control, D-dimensional dense action]
+```
+
+This is 15 channels for the 7D RoboCasa actions and 5 channels for the 2D
+Push-T actions.
+
+The dense sequence is linearly sampled from the demonstration over the
+ground-truth B-spline's valid knot interval. Its 16 phase points therefore
+match the differentiable training-time B-spline decoder instead of assuming
+that the spline always spans the next 16 integer timesteps. The original UNet
+and per-row Drifting loss remain strictly in the `1 + D` B-spline space. A
+weighted consistency loss decodes every generated B-spline into normalized
+`D`-dimensional actions and compares the best of the eight Drifting samples
+with the aligned demonstration actions.
+Best-of-eight supervision avoids forcing every stochastic sample toward the
+same MSE average. Knot gradients from this term are detached for numerical
+stability; the consistency gradient directly trains the predicted control
+points and the shared visual representation.
+
+At rollout, the policy still projects only the `1 + D` B-spline channels and
+decodes physical environment actions. No raw-action head is used at inference.
+
+The policy's legacy `raw_action_training_mode=joint` default exists only so
+checkpoints produced by the earlier 15D joint-Drifting experiment remain
+loadable. The former `auxiliary` mode also remains available for its existing
+checkpoints. The configs below explicitly select
+`raw_action_training_mode=decode_consistency`.
+
+Each config preserves its corresponding baseline hyperparameters:
+
+```text
+train_drifting_unet_pusht_image_bspline_raw_concat_workspace
+train_drifting_unet_turn_off_sink_faucet_image_bspline_raw_concat_workspace
+train_drifting_unet_turn_off_microwave_image_bspline_raw_concat_workspace
+train_drifting_unet_close_single_door_image_bspline_raw_concat_workspace
+train_drifting_unet_coffee_press_button_image_bspline_raw_concat_workspace
+```
+
+For example:
+
+```bash
+conda activate bsp-simple
+cd ~/bspline-policy/bspline_policy
+
+HYDRA_FULL_ERROR=1 WANDB_MODE=offline python train.py \
+  --config-name=train_drifting_unet_pusht_image_bspline_raw_concat_workspace \
+  logging.mode=offline
+```
+
+The original `*_image_bspline_workspace` configs remain unchanged and load
+their existing checkpoints with the original eight-channel output contract.
+
 ### Drifting-BSpline Can Image
 
 The Can configuration uses the Robomimic `ph/image.hdf5` demonstrations with
