@@ -200,6 +200,14 @@ HYDRA_FULL_ERROR=1 WANDB_MODE=offline python train.py \
 The original `*_image_bspline_workspace` configs remain unchanged and load
 their existing checkpoints with the original eight-channel output contract.
 
+### wipe_bb Real-Robot Training
+
+The `train_drifting_unet_wipe_bb_image_bspline_raw_concat_workspace` config
+reads the dual-camera `diffusion_policy/data/wipe_bb/data_save.zarr` dataset
+with seven absolute joint targets and no gripper. See
+[wipe_bb training](docs/wipe_bb_training.md) for the data contract, commands,
+validation split, and CPU smoke check.
+
 ### Drifting-BSpline Can Image
 
 The Can configuration uses the Robomimic `ph/image.hdf5` demonstrations with

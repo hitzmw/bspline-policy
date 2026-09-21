@@ -10,6 +10,9 @@ drifting_policy/
 /third_party/robocasa-cosmos-policy/
 /third_party/cosmos-policy-reference/
 
+# Local paper sources and build artifacts.
+/paper/
+
 # Local datasets and generated experiment artifacts.
 **/data/
 **/local_outputs/

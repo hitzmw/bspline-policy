@@ -2,9 +2,9 @@
 
 Identical decode contract as the PushT adapter: ``predict_action`` keeps the
 raw B-spline parameters under ``action_pred``/``bspline_action`` and exposes
-the decoded physical action chunk (8 steps of the 8-dim ``control`` vector:
-7 absolute joint targets + gripper command) under ``action`` for real-robot
-rollout scripts.
+the decoded physical action chunk (8 steps of the ``control`` vector:
+7 absolute joint targets, optionally plus a gripper command) under ``action``
+for real-robot rollout scripts.
 """
 
 from __future__ import annotations

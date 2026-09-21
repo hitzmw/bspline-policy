@@ -1,0 +1,39 @@
+name: wipe_bb_image_bspline
+
+shape_meta:
+  obs:
+    sideview_image:
+      shape: [3, 128, 128]
+      type: rgb
+    wrist_image:
+      shape: [3, 128, 128]
+      type: rgb
+    ee_pose:
+      shape: [6]
+      type: low_dim
+    joint_positions:
+      shape: [7]
+      type: low_dim
+  # Physical action dimensions; the policy adds the knot/raw channels.
+  action:
+    shape: [7]
+
+env_runner:
+  _target_: bspline_policy.env_runner.null_image_runner.NullImageRunner
+
+dataset:
+  _target_: bspline_policy.dataset.franka_bspline_image_dataset.FrankaBSplineImageDataset
+  zarr_path: ../diffusion_policy/data/wipe_bb/data_save.zarr
+  horizon: ${horizon}
+  n_obs_steps: ${dataset_obs_steps}
+  chunk_size: ${eval:'${horizon}-2*${task.dataset.bspline_degree}'}
+  bspline_degree: 3
+  max_error: 0.01
+  stride: 1
+  relative_knots: false
+  include_joint_positions: true
+  seed: ${training.seed}
+  # Hold out 7 of the 67 complete demonstrations; never split by frame.
+  val_ratio: 0.1
+  max_train_episodes: null
+  cache_base_path: data/cache/wipe_bb/data_save
